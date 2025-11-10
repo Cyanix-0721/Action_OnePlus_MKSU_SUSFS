@@ -7,16 +7,12 @@ on:
         description: "选择 LineageOS 内核分支（例如 lineage-23.0 或 lineage-22.1）"
         required: true
         default: "lineage-23.0"
-      SUSFS_CI:
-        description: "启用 SUSFS 模块 (推荐 true)"
-        type: boolean
-        default: true
+      SUSFS_MODE:
+        description: "选择 SUSFS 分支: main / dev / none"
+        required: true
+        default: "main"
       KPM:
         description: "启用 KPM 模块"
-        type: boolean
-        default: true
-      VFS:
-        description: "使用手动 Hook 模式 (非 GKI 必须启用)"
         type: boolean
         default: true
 
@@ -47,10 +43,19 @@ jobs:
           cd kernel_workspace
           git submodule update --init --recursive
 
-      - name: Integrate SukiSU
+      - name: Integrate SukiSU (手动 Hook 模式)
         run: |
           cd kernel_workspace
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+          MODE="${{ github.event.inputs.SUSFS_MODE }}"
+          if [[ "$MODE" == "main" ]]; then
+            echo ">>> 集成 SukiSU SUSFS-main 分支 (非 GKI 手动模式)"
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+          elif [[ "$MODE" == "dev" ]]; then
+            echo ">>> 集成 SukiSU SUSFS-dev 分支 (开发版)"
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-dev
+          else
+            echo ">>> 跳过 SUSFS 集成"
+          fi
 
       - name: Configure Kernel
         run: |
@@ -80,10 +85,10 @@ jobs:
           cp -f ../kernel_workspace/out/arch/arm64/boot/dtbo.img ./dtbo.img || true
           cp -f ../kernel_workspace/out/arch/arm64/boot/dtb ./dtb || true
           sed -i 's/is_slot_device=1/is_slot_device=0/g' anykernel.sh
-          zip -r9 "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}.zip" * -x .git README.md .gitignore
+          zip -r9 "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}.zip" * -x .git README.md .gitignore
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}"
-          path: "AnyKernel3/SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}.zip"
+          name: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}"
+          path: "AnyKernel3/SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}.zip"
