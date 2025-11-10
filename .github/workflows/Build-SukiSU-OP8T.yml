@@ -9,18 +9,18 @@ on:
         required: true
         default: "lineage-23.0"
       SUSFS_MODE:
-        description: "选择 SUSFS 集成模式 (非 GKI 手动模式)"
+        description: "选择 SUSFS 集成模式"
         required: true
         type: choice
         options:
+          - none
           - main
           - dev
-          - none
-        default: main
+        default: none
       KPM:
         description: "启用 KPM 模块"
         type: boolean
-        default: true
+        default: false
 
   # 每天自动触发 (UTC 03:00, 即北京时间 11:00)
   schedule:
@@ -57,7 +57,7 @@ jobs:
       - name: Integrate SukiSU (手动 Hook 模式)
         run: |
           cd kernel_workspace
-          MODE="${{ github.event.inputs.SUSFS_MODE || 'main' }}"
+          MODE="${{ github.event.inputs.SUSFS_MODE || 'none' }}"
           if [[ "$MODE" == "main" ]]; then
             echo ">>> 集成 SukiSU SUSFS-main 分支 (非 GKI 手动模式)"
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
@@ -97,12 +97,12 @@ jobs:
           cp -f ../kernel_workspace/out/arch/arm64/boot/dtb ./dtb || true
           sed -i 's/is_slot_device=1/is_slot_device=0/g' anykernel.sh
 
-          ZIP_NAME="SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'main' }}.zip"
+          ZIP_NAME="SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'none' }}.zip"
           zip -r9 "$ZIP_NAME" * -x .git README.md .gitignore
           mv "$ZIP_NAME" ../
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'main' }}"
-          path: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'main' }}.zip"
+          name: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'none' }}"
+          path: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'none' }}.zip"
