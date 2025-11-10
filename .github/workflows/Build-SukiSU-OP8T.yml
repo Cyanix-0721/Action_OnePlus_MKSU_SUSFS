@@ -12,10 +12,10 @@ on:
         required: true
         type: choice
         options:
-          - none
           - main
           - dev
-        default: none
+          - none
+        default: main
       KPM:
         description: "启用 KPM 模块"
         type: boolean
