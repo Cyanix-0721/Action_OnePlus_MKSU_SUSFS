@@ -8,9 +8,14 @@ on:
         required: true
         default: "lineage-23.0"
       SUSFS_MODE:
-        description: "选择 SUSFS 分支: main / dev / none"
+        description: "选择 SUSFS 集成模式 (非 GKI 手动模式)"
         required: true
-        default: "main"
+        type: choice
+        options:
+          - main
+          - dev
+          - none
+        default: main
       KPM:
         description: "启用 KPM 模块"
         type: boolean
