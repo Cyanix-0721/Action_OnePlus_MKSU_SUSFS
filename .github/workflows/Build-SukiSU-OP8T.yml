@@ -1,6 +1,7 @@
 name: Build SukiSU Kernel for OnePlus 8T (sm8250)
 
 on:
+  # 手动触发
   workflow_dispatch:
     inputs:
       KERNEL_BRANCH:
@@ -21,9 +22,13 @@ on:
         type: boolean
         default: true
 
+  # 每天自动触发 (UTC 03:00, 即北京时间 11:00)
+  schedule:
+    - cron: "0 3 * * *"
+
 jobs:
   build:
-    name: Build SukiSU Kernel (${{ github.event.inputs.KERNEL_BRANCH }})
+    name: Build SukiSU Kernel (${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }})
     runs-on: ubuntu-22.04
 
     steps:
@@ -43,7 +48,8 @@ jobs:
 
       - name: Clone Kernel Source
         run: |
-          git clone --depth=1 --branch "${{ github.event.inputs.KERNEL_BRANCH }}" \
+          BRANCH="${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}"
+          git clone --depth=1 --branch "$BRANCH" \
             https://github.com/LineageOS/android_kernel_oneplus_sm8250 kernel_workspace
           cd kernel_workspace
           git submodule update --init --recursive
@@ -51,7 +57,7 @@ jobs:
       - name: Integrate SukiSU (手动 Hook 模式)
         run: |
           cd kernel_workspace
-          MODE="${{ github.event.inputs.SUSFS_MODE }}"
+          MODE="${{ github.event.inputs.SUSFS_MODE || 'main' }}"
           if [[ "$MODE" == "main" ]]; then
             echo ">>> 集成 SukiSU SUSFS-main 分支 (非 GKI 手动模式)"
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
@@ -90,10 +96,13 @@ jobs:
           cp -f ../kernel_workspace/out/arch/arm64/boot/dtbo.img ./dtbo.img || true
           cp -f ../kernel_workspace/out/arch/arm64/boot/dtb ./dtb || true
           sed -i 's/is_slot_device=1/is_slot_device=0/g' anykernel.sh
-          zip -r9 "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}.zip" * -x .git README.md .gitignore
+
+          ZIP_NAME="SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'main' }}.zip"
+          zip -r9 "$ZIP_NAME" * -x .git README.md .gitignore
+          mv "$ZIP_NAME" ../
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}"
-          path: "AnyKernel3/SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}.zip"
+          name: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'main' }}"
+          path: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'main' }}.zip"
