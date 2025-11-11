@@ -54,16 +54,14 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           mkdir -p clang-aosp
-          wget -O clang.tar.gz \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ env.CLANG_VERSION }}.tar.gz
+          wget -O clang.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ env.CLANG_VERSION }}.tar.gz
           tar -xzf clang.tar.gz -C clang-aosp
 
       - name: Download GCC
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           mkdir -p gcc-64
-          wget -O gcc.tar.gz \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${{ env.GCC_TAG }}.tar.gz
+          wget -O gcc.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${{ env.GCC_TAG }}.tar.gz
           tar -xzf gcc.tar.gz -C gcc-64
 
       - name: Clone LOS23 Kernel Source
@@ -72,11 +70,12 @@ jobs:
           git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} \
             https://github.com/LineageOS/android_kernel_oneplus_sm8250 android-kernel
 
-      - name: Integrate SukiSU + SUSFS + Fix LOS23 kernel issues
+      - name: Integrate SukiSU + SUSFS + Apply LOS23 Fixes
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           MODE="${{ github.event.inputs.SUSFS_MODE }}"
 
+          # SukiSU + SUSFS 集成
           if [[ "$MODE" == "none" ]]; then
             echo "Integrating SukiSU (non-GKI)..."
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
@@ -87,7 +86,7 @@ jobs:
 
           echo "CONFIG_KSU_TRACEPOINT_HOOK=y" >> arch/arm64/configs/vendor/kona_defconfig
 
-          # ------------------- Tracepoint Hooks -------------------
+          # Tracepoint Hook 插入
           sed -i '/#include <linux\/binfmts.h>/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/exec.c
           sed -i '/int do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif' fs/exec.c
           sed -i '/static int compat_do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_execveat_sucompat_hook((int *)AT_FDCWD, &filename, NULL, NULL, NULL);\n#endif' fs/exec.c
@@ -103,32 +102,30 @@ jobs:
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # ---------- 可靠修复脚本（用于 LOS23 / 4.19 情况） ----------
+          # lockdep.c 修复
           LOCKDEP_FILE="kernel/locking/lockdep.c"
           if [ -f "$LOCKDEP_FILE" ]; then
-            echo "Patching lockdep.c for LOS23 / 4.19 nested param..."
+            echo "Patching lockdep.c..."
             sed -i 's/__lock_release(struct lockdep_map \*lock, int nested, unsigned long ip)/__lock_release(struct lockdep_map *lock, unsigned long ip)/' "$LOCKDEP_FILE"
             sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/g' "$LOCKDEP_FILE"
-            echo "lockdep.c patched successfully."
           fi
 
+          # qpnp-power-on.c 修复
           QPNP_FILE="drivers/input/misc/qpnp-power-on.c"
           if [ -f "$QPNP_FILE" ]; then
-            echo "Fixing qpnp-power-on.c..."
             git checkout -- "$QPNP_FILE" || true
             if grep -q "struct qpnp_pon" "$QPNP_FILE" && ! grep -q "log_kpd_event" "$QPNP_FILE"; then
               perl -0777 -i -pe 'if (/struct\s+qpnp_pon\s*{/) { s/(struct\s+qpnp_pon\s*{)/$1\n\tbool log_kpd_event;\n/ unless /log_kpd_event/ }' "$QPNP_FILE"
             fi
           fi
 
+          # oplus_nwpower.c 修复
           NWP_FILE="net/oplus_nwpower/oplus_nwpower.c"
           if [ -f "$NWP_FILE" ]; then
-            echo "Fixing oplus_nwpower.c..."
             if ! grep -q "get_cached_platform_id" "$NWP_FILE"; then
               sed -i '1i#ifndef GET_CACHED_PLATFORM_ID_STUB\nstatic inline int get_cached_platform_id(void) { return -1; }\n#define GET_CACHED_PLATFORM_ID_STUB\n#endif\n' "$NWP_FILE"
             fi
           fi
-          # ------------------- end fixes -------------------
 
           cd scripts && sed -i 's/ -dirty//g' setlocalversion
           KSU_VERSION=$(cd ../KernelSU && expr $(git rev-list --count HEAD 2>/dev/null || echo 0) + 20000)
@@ -140,16 +137,13 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           mkdir -p out
-
           export ARCH=arm64
           export SUBARCH=arm64
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin:$PATH
           export KBUILD_BUILD_HOST=Github-Action
           export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
-
           make O=out vendor/kona_defconfig
           make O=out olddefconfig
-
           make O=out -j$(nproc --all) \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -157,7 +151,6 @@ jobs:
             LD=ld.lld \
             LLVM=1 LLVM_IAS=1 \
             2>&1 | tee out/build.log
-
           echo "build_exit_code=$?" >> $GITHUB_ENV
 
       - name: Upload Build Log (Always)
@@ -180,6 +173,16 @@ jobs:
           KERNEL_VERSION=$(cat out/include/config/kernel.release)
           echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
 
+      - name: Prepare ZIP Name
+        if: env.CHECK_IMAGE == 'true'
+        run: |
+          ZIP_SUFFIX=""
+          if [[ "${{ github.event.inputs.KPM }}" == "true" ]]; then
+            ZIP_SUFFIX="-KPM"
+          fi
+          ZIP_NAME="SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}$ZIP_SUFFIX-${{ env.BUILD_TIME }}"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
       - name: Apply KPM Patch (if enabled)
         if: github.event.inputs.KPM == 'true' && env.CHECK_IMAGE == 'true'
         run: |
@@ -194,21 +197,14 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
-
           cp android-kernel/out/arch/arm64/boot/Image AnyKernel3/
           cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
           cp android-kernel/out/arch/arm64/boot/dtb AnyKernel3/ || true
-
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
           sed -i 's/IS_SLOT_DEVICE=1/IS_SLOT_DEVICE=auto/g' AnyKernel3/anykernel.sh
           sed -i 's!BLOCK=.*!BLOCK=auto!g' AnyKernel3/anykernel.sh
-
-          ZIP_SUFFIX=""
-          [[ "${{ github.event.inputs.KPM }}" == "true" ]] && ZIP_SUFFIX="-KPM"
-          ZIP_NAME="SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}$ZIP_SUFFIX-${{ env.BUILD_TIME }}.zip"
-
           cd AnyKernel3
-          zip -r9 "../$ZIP_NAME" * -x .git README.md .gitignore
+          zip -r9 "../${ZIP_NAME}" * -x .git README.md .gitignore
 
       - name: Upload Kernel Image
         if: env.CHECK_IMAGE == 'true'
@@ -221,5 +217,5 @@ jobs:
         if: env.CHECK_IMAGE == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}${{ github.event.inputs.KPM == 'true' && '-KPM' || '' }}-${{ env.BUILD_TIME }}
+          name: ${{ env.ZIP_NAME }}
           path: kernel_workspace/*.zip
