@@ -125,10 +125,20 @@ jobs:
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # 内核4.19 nested 修复 
+          # 编译错误处理
           LOCKDEP_FILE="kernel/locking/lockdep.c"
           if [ -f "$LOCKDEP_FILE" ]; then
             echo "Skipping nested param patch on LOS23 kernel..."
+          fi
+
+          if [ -f drivers/input/misc/qpnp-power-on.c ]; then
+            echo "Patching qpnp-power-on.c..."
+            sed -i 's/pon->log_kpd_event/0/g' drivers/input/misc/qpnp-power-on.c
+          fi
+
+          if [ -f net/oplus_nwpower/oplus_nwpower.c ]; then
+            echo "Patching oplus_nwpower.c..."
+            sed -i '1i int get_cached_platform_id(void) { return -1; }' net/oplus_nwpower/oplus_nwpower.c
           fi
 
           # 版本处理
