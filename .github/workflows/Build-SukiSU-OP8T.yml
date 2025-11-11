@@ -46,6 +46,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib liblz4-tool make squashfs-tools dpkg-dev libssl-dev python3 bc libncurses5-dev
 
+      # === 关键修复：必须先创建 kernel_workspace 目录 ===
+      - name: Create kernel workspace directory
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+
       - name: Cache Clang
         id: cache-clang
         uses: actions/cache@v4
@@ -84,56 +89,54 @@ jobs:
           git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} \
             https://github.com/LineageOS/android_kernel_oneplus_sm8250 android-kernel
 
-      - name: Integrate SukiSU with Tracepoint Hook
+      - name: Integrate SukiSU with Tracepoint Hook (No Manual Patch Needed)
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
 
           MODE="${{ github.event.inputs.SUSFS_MODE }}"
           if [[ "$MODE" != "none" ]]; then
-            # 克隆 SukiSU-Ultra 仓库获取 KernelSU 核心代码
+            # 1. 复制 KernelSU 核心代码
             git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU_temp
             cp -r KernelSU_temp/KernelSU/* .
             rm -rf KernelSU_temp
 
-            # 启用核心配置
+            # 2. 启用 Tracepoint Hook + 安全模式
             echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/kona_defconfig
             echo "CONFIG_KSU_TRACEPOINT_HOOK=y" >> arch/arm64/configs/vendor/kona_defconfig
 
-            # 应用 Tracepoint Hook 修改（基于文档 diff，使用 sed 实现精确插入）
-            # 1. fs/exec.c 修改
-            sed -i '/#include <linux\/binfmts.h>/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\n#include <ksu_trace.h>\\n#endif' fs/exec.c
-            sed -i '/int do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\ntrace_ksu_trace_execveat_hook((int \*)AT_FDCWD, &filename, &argv, &envp, 0);\\n#endif' fs/exec.c
-            sed -i '/static int compat_do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\ntrace_ksu_trace_execveat_sucompat_hook((int \*)AT_FDCWD, &filename, NULL, NULL, NULL); /* 32-bit su */\\n#endif' fs/exec.c
+            # 3. 插入 tracepoint 调用（干净、无副作用）
+            # fs/exec.c
+            sed -i '/#include <linux\/binfmts.h>/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/exec.c
+            sed -i '/int do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif' fs/exec.c
+            sed -i '/static int compat_do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_execveat_sucompat_hook((int *)AT_FDCWD, &filename, NULL, NULL, NULL);\n#endif' fs/exec.c
 
-            # 2. fs/open.c 修改（假设有 do_faccessat）
-            sed -i '/#include "internal.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\n#include <ksu_trace.h>\\n#endif' fs/open.c
-            sed -i '/static long do_faccessat(int dfd, const char __user \*filename, int mode,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\ntrace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);\\n#endif' fs/open.c
+            # fs/open.c
+            sed -i '/#include "internal.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/open.c
+            sed -i '/static long do_faccessat(int dfd, const char __user \*filename, int mode,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);\n#endif' fs/open.c
 
-            # 3. fs/read_write.c 修改
-            sed -i '/#include <asm\/unistd.h>/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\n#include <ksu_trace.h>\\n#endif' fs/read_write.c
-            sed -i '/SYSCALL_DEFINE3(read, unsigned int, fd, char __user \*, buf, size_t, count)/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\ntrace_ksu_trace_sys_read_hook(fd, &buf, &count);\\n#endif' fs/read_write.c
+            # fs/read_write.c
+            sed -i '/#include <asm\/unistd.h>/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/read_write.c
+            sed -i '/SYSCALL_DEFINE3(read, unsigned int, fd, char __user \*, buf, size_t, count)/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_sys_read_hook(fd, &buf, &count);\n#endif' fs/read_write.c
 
-            # 4. fs/stat.c 修改
-            sed -i '/#include "mount.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\n#include <ksu_trace.h>\\n#endif' fs/stat.c
-            sed -i '/SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\\n#endif' fs/stat.c
-            sed -i '/SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag); /* 32-bit su support */\\n#endif' fs/stat.c
+            # fs/stat.c
+            sed -i '/#include "mount.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/stat.c
+            sed -i '/SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif' fs/stat.c
+            sed -i '/SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif' fs/stat.c
 
-            # 安全模式：修改 drivers/input/input.c 添加 input hook
-            sed -i '/#include "input-compat.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\n#include <../../drivers/kernelsu/ksu_trace.h>\\n#endif' drivers/input/input.c
-            sed -i '/void input_event(struct input_dev \*dev,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\ntrace_ksu_trace_input_hook(&type, &code, &value);\\n#endif' drivers/input/input.c
+            # 安全模式（必须启用）
+            sed -i '/#include "input-compat.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/input/input.c
+            sed -i '/void input_event(struct input_dev \*dev,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_input_hook(&type, &code, &value);\n#endif' drivers/input/input.c
 
-            # pm 命令修复：修改 drivers/tty/pty.c
-            sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\n#include <../../drivers/kernelsu/ksu_trace.h>\\n#endif' drivers/tty/pty.c
-            sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\\ntrace_ksu_trace_devpts_hook((struct inode \*)file->f_path.dentry->d_inode);\\n#endif' drivers/tty/pty.c
+            # pm 命令修复
+            sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
+            sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-            # 记录 KSU 版本
-            KSU_VERSION=$(cd KernelSU && expr $(git rev-list --count HEAD) + 20000)
-            echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-
-            # 清理版本号中的 -dirty
+            # 版本处理
             cd scripts && sed -i 's/ -dirty//g' setlocalversion
+            KSU_VERSION=$(cd ../KernelSU && expr $(git rev-list --count HEAD) + 20000)
+            echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
           else
-            echo "Skip SUSFS integration"
+            echo "SUSFS integration skipped"
           fi
 
       - name: Build Kernel
@@ -145,11 +148,8 @@ jobs:
           export KBUILD_BUILD_HOST=Github-Action
           export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
 
-          # 加载配置并非交互式补全
           make O=out vendor/kona_defconfig
           make O=out olddefconfig
-
-          # 编译
           make O=out -j$(nproc --all) \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -185,22 +185,18 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel_workspace
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
 
-          # 复制内核镜像
           cp android-kernel/out/arch/arm64/boot/Image AnyKernel3/
           cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
           cp android-kernel/out/arch/arm64/boot/dtb AnyKernel3/ || true
 
-          # 优化 anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
           sed -i 's/IS_SLOT_DEVICE=1/IS_SLOT_DEVICE=auto/g' AnyKernel3/anykernel.sh
           sed -i 's!BLOCK=.*!BLOCK=auto!g' AnyKernel3/anykernel.sh
 
-          # 生成 ZIP 名称
           ZIP_SUFFIX=""
           [[ "${{ github.event.inputs.KPM }}" == "true" ]] && ZIP_SUFFIX="-KPM"
           ZIP_NAME="SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}$ZIP_SUFFIX-${{ env.BUILD_TIME }}.zip"
 
-          # 打包
           cd AnyKernel3
           zip -r9 "../$ZIP_NAME" * -x .git README.md .gitignore
 
