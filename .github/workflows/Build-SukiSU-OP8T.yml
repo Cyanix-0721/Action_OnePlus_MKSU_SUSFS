@@ -126,8 +126,16 @@ jobs:
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
           # 修复 nested 错误
-          if ! grep -q "define nested" kernel/locking/lockdep.c; then
-            echo -e "\n#ifndef nested\n#define nested 0\n#endif" >> kernel/locking/lockdep.c
+          if [ -f kernel/locking/lockdep.c ]; then
+            if ! grep -q "#ifndef nested" kernel/locking/lockdep.c; then
+              # 在文件第一行之前插入（确保宏在任何使用之前）
+              sed -i '1i#ifndef nested\n#define nested 0\n#endif\n' kernel/locking/lockdep.c
+              echo "Inserted fallback nested macro into kernel/locking/lockdep.c"
+            else
+              echo "nested macro already present in lockdep.c, skipping insert"
+            fi
+          else
+            echo "lockdep.c not found — skipped nested fallback insert"
           fi
 
           # 版本处理
