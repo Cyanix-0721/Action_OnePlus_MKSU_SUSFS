@@ -125,38 +125,60 @@ jobs:
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # ---------- 修复 4.19 内核相关兼容问题 ----------
-
-          # 修复 nested 参数错误（4.19 系 SUSFS 冲突）
+          # ---------- 可靠修复脚本（用于 LOS23 / 4.19 情况） ----------
+          # 1) lockdep 修复（删除可能的宏 / 调整签名与调用）
           LOCKDEP_FILE="kernel/locking/lockdep.c"
           if [ -f "$LOCKDEP_FILE" ]; then
-            echo "Patching nested param issue in lockdep.c..."
-            if grep -q "nested" "$LOCKDEP_FILE"; then
+            echo "Patching lockdep.c (nested / signature fixes)..."
+            # 恢复（若之前被改过）并操作安全性检查
+            # 删除可能的错误宏定义（避免把参数名替换为 0）
+            sed -i '/#define nested/d' "$LOCKDEP_FILE" || true
+          
+            # 若存在 __lock_release 定义带 nested，则将其转为 two-arg 版本
+            if grep -q "__lock_release(struct lockdep_map .*int nested" "$LOCKDEP_FILE"; then
               sed -i 's/__lock_release(struct lockdep_map \*lock, int nested, unsigned long ip)/__lock_release(struct lockdep_map *lock, unsigned long ip)/' "$LOCKDEP_FILE"
-              sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/g' "$LOCKDEP_FILE"
-              if ! grep -q "define nested" "$LOCKDEP_FILE"; then
-                echo -e "\n#ifndef nested\n#define nested 0\n#endif" >> "$LOCKDEP_FILE"
-              fi
+            fi
+          
+            # 将调用处删除 nested 参数（使用全文件替换，带 g）
+            sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/g' "$LOCKDEP_FILE" || true
+          
+            # 若源码其他地方仍引用 nested，但未定义，兜底定义（追加到头部更安全，但插到文件靠前）
+            if ! grep -q "#ifndef nested" "$LOCKDEP_FILE"; then
+              # 在文件第一行前插入兜底宏，确保在所有使用前生效
+              sed -i '1i#ifndef nested\n#define nested 0\n#endif\n' "$LOCKDEP_FILE"
             fi
           fi
-
-          # ---------- qpnp-power-on.c 修复 ----------
+          
+          # 2) qpnp-power-on.c 修复：先还原工作区文件到 git HEAD（避免被之前的粗暴替换破坏），然后插入成员
           QPNP_FILE="drivers/input/misc/qpnp-power-on.c"
           if [ -f "$QPNP_FILE" ]; then
-            echo "Fixing missing struct member log_kpd_event..."
-            # 删除无效字段赋值语句，防止 “no member named” 错误
-            sed -i '/pon->log_kpd_event *= of_property_read_bool/d' "$QPNP_FILE"
-            sed -i '2558i\ \ \ \ \ \ /* removed log_kpd_event for legacy kernel */' "$QPNP_FILE"
-          fi
-
-          # ---------- oplus_nwpower.c 修复 ----------
-          NWP_FILE="net/oplus_nwpower/oplus_nwpower.c"
-          if [ -f "$NWP_FILE" ]; then
-            echo "Injecting missing get_cached_platform_id() definition..."
-            if ! grep -q "get_cached_platform_id" "$NWP_FILE"; then
-              sed -i '1i #ifndef get_cached_platform_id\nint get_cached_platform_id(void) { return -1; }\n#endif\n' "$NWP_FILE"
+            echo "Restoring and patching qpnp-power-on.c..."
+            # 恢复为仓库版本，防止之前错误 sed 改坏语法
+            git checkout -- "$QPNP_FILE" || true
+          
+            # 仅在 struct 中确实缺失 log_kpd_event 时插入该成员（用 perl 做稳健替换）
+            if grep -q "struct qpnp_pon" "$QPNP_FILE" && ! grep -q "log_kpd_event" "$QPNP_FILE"; then
+              perl -0777 -i -pe 'if (/struct\s+qpnp_pon\s*{/) { s/(struct\s+qpnp_pon\s*{)/$1\n\tbool log_kpd_event;\n/ unless /log_kpd_event/ }' "$QPNP_FILE"
+              echo "Inserted 'bool log_kpd_event;' into struct qpnp_pon"
+            else
+              echo "qpnp_power file already contains log_kpd_event or struct not found — skipping insertion"
             fi
           fi
+          
+          # 3) oplus_nwpower 修复：插入兼容实现（放文件顶部），避免隐式声明
+          NWP_FILE="net/oplus_nwpower/oplus_nwpower.c"
+          if [ -f "$NWP_FILE" ]; then
+            echo "Patching oplus_nwpower.c (adding get_cached_platform_id stub if missing)..."
+            if ! grep -q "get_cached_platform_id" "$NWP_FILE"; then
+              # 插入 static inline 版放在文件最前面，减少链接/重定义风险
+              sed -i '1i#ifndef GET_CACHED_PLATFORM_ID_STUB\nstatic inline int get_cached_platform_id(void) { return -1; }\n#define GET_CACHED_PLATFORM_ID_STUB\n#endif\n' "$NWP_FILE"
+              echo "Inserted get_cached_platform_id() stub."
+            else
+              echo "get_cached_platform_id already present — skipping."
+            fi
+          fi
+          
+          # ---------- end of compatibility fixes ----------
 
           # ---------- 内核版本处理 ----------
           cd scripts && sed -i 's/ -dirty//g' setlocalversion
