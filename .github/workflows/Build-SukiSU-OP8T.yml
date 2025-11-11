@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       KERNEL_BRANCH:
-        description: "选择内核分支（A14 内核推荐使用 oneplus/sm8250_u_14.0.0_op8t）"
+        description: "选择 LineageOS 内核分支"
         required: true
-        default: "oneplus/sm8250_u_14.0.0_op8t"
+        default: "lineage-23.0"
       SUSFS_MODE:
         description: "选择 SUSFS 集成模式"
         required: true
@@ -82,11 +82,11 @@ jobs:
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${{ env.GCC_TAG }}.tar.gz
           tar -xzf gcc.tar.gz -C gcc-64
 
-      - name: Clone Kernel Source
+      - name: Clone LOS23 Kernel Source
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} \
-            https://github.com/OnePlusOSS/android_kernel_oneplus_sm8250 android-kernel
+            https://github.com/LineageOS/android_kernel_oneplus_sm8250 android-kernel
 
       - name: Integrate SukiSU + SUSFS
         run: |
@@ -125,13 +125,11 @@ jobs:
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # 修复 4.19 内核 nested 参数冲突（A14 内核无需处理）
-          # LOCKDEP_FILE="kernel/locking/lockdep.c"
-          # if [ -f "$LOCKDEP_FILE" ]; then
-          #   echo "Patching __lock_release nested param for 4.19 SUSFS compatibility..."
-          #   sed -i 's/__lock_release(struct lockdep_map \*lock, int nested, unsigned long ip)/__lock_release(struct lockdep_map *lock, unsigned long ip)/' "$LOCKDEP_FILE"
-          #   sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/' "$LOCKDEP_FILE"
-          # fi
+          # 内核4.19 nested 修复 
+          LOCKDEP_FILE="kernel/locking/lockdep.c"
+          if [ -f "$LOCKDEP_FILE" ]; then
+            echo "Skipping nested param patch on LOS23 kernel..."
+          fi
 
           # 版本处理
           cd scripts && sed -i 's/ -dirty//g' setlocalversion
