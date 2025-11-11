@@ -34,13 +34,13 @@ jobs:
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
           sudo apt-get update -y
           sudo apt-get install -y \
-            gcc-12-aarch64-linux-gnu \
+            gcc-12 g++-12 gcc-12-aarch64-linux-gnu \
             gcc-12-arm-linux-gnueabi \
             binutils-aarch64-linux-gnu \
             binutils-arm-linux-gnueabi
           sudo apt-get install -y \
             git python3 unzip curl wget bc \
-            clang lld make gcc g++ \
+            clang lld make \
             zip cpio flex bison libssl-dev libelf-dev \
             libncurses5-dev libncursesw5-dev libxml2-utils device-tree-compiler
           echo "CROSS_COMPILE_AARCH64=aarch64-linux-gnu-" >> $GITHUB_ENV
@@ -76,8 +76,10 @@ jobs:
           cd kernel_workspace
           export ARCH=arm64
           export SUBARCH=arm64
+          export HOSTCC=gcc-12
+          export HOSTCXX=g++-12
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=${{ env.CROSS_COMPILE_AARCH64 }} CROSS_COMPILE_COMPAT=${{ env.CROSS_COMPILE_ARM }} LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip vendor/kona_defconfig
-          yes "" | make O=out ARCH=arm64 oldconfig
+          make O=out ARCH=arm64 olddefconfig
 
       - name: Build Kernel and Capture Log
         id: build_kernel
@@ -85,6 +87,8 @@ jobs:
           cd kernel_workspace
           export ARCH=arm64
           export SUBARCH=arm64
+          export HOSTCC=gcc-12
+          export HOSTCXX=g++-12
           echo "=== Start Kernel Build ==="
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=${{ env.CROSS_COMPILE_AARCH64 }} CROSS_COMPILE_COMPAT=${{ env.CROSS_COMPILE_ARM }} LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip -j$(nproc) V=1 2>&1 | tee build.log
           echo "build_status=$?" >> $GITHUB_OUTPUT
