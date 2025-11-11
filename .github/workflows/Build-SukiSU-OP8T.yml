@@ -27,17 +27,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Install Cross Compilers (Fix Conflicts)
         run: |
           sudo apt-get update -y
           sudo apt-get install -y software-properties-common
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
           sudo apt-get update -y
           sudo apt-get install -y \
+            gcc-12-aarch64-linux-gnu \
+            gcc-12-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi
+          sudo apt-get install -y \
             git python3 unzip curl wget bc \
             clang lld make gcc g++ \
-            gcc-12-aarch64-linux-gnu gcc-12-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
             zip cpio flex bison libssl-dev libelf-dev \
             libncurses5-dev libncursesw5-dev libxml2-utils device-tree-compiler
           echo "CROSS_COMPILE_AARCH64=aarch64-linux-gnu-" >> $GITHUB_ENV
@@ -73,16 +76,8 @@ jobs:
           cd kernel_workspace
           export ARCH=arm64
           export SUBARCH=arm64
-          make O=out ARCH=arm64 \
-            CC=clang HOSTCC=clang HOSTCXX=clang++ \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE_AARCH64 }} \
-            CROSS_COMPILE_COMPAT=${{ env.CROSS_COMPILE_ARM }} \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            vendor/kona_defconfig
-          # Handle new config options non-interactively
-          make O=out olddefconfig
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=${{ env.CROSS_COMPILE_AARCH64 }} CROSS_COMPILE_COMPAT=${{ env.CROSS_COMPILE_ARM }} LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip vendor/kona_defconfig
+          yes "" | make O=out ARCH=arm64 oldconfig
 
       - name: Build Kernel and Capture Log
         id: build_kernel
@@ -91,14 +86,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           echo "=== Start Kernel Build ==="
-          make O=out ARCH=arm64 \
-            CC=clang HOSTCC=clang HOSTCXX=clang++ \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE_AARCH64 }} \
-            CROSS_COMPILE_COMPAT=${{ env.CROSS_COMPILE_ARM }} \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            -j$(nproc) V=1 2>&1 | tee build.log
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=${{ env.CROSS_COMPILE_AARCH64 }} CROSS_COMPILE_COMPAT=${{ env.CROSS_COMPILE_ARM }} LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip -j$(nproc) V=1 2>&1 | tee build.log
           echo "build_status=$?" >> $GITHUB_OUTPUT
           mkdir -p $GITHUB_WORKSPACE/artifacts
           cp build.log $GITHUB_WORKSPACE/artifacts/build.log || true
