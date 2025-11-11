@@ -103,17 +103,13 @@ jobs:
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # ------------------- LOS23 (4.19) 修复 -------------------
-          echo "Applying LOS23 compatibility fixes..."
-
+          # ---------- 可靠修复脚本（用于 LOS23 / 4.19 情况） ----------
           LOCKDEP_FILE="kernel/locking/lockdep.c"
           if [ -f "$LOCKDEP_FILE" ]; then
-            echo "Fixing nested reference..."
-            sed -i '/#define nested/d' "$LOCKDEP_FILE" || true
-            sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/g' "$LOCKDEP_FILE" || true
-            if ! grep -q "#ifndef nested" "$LOCKDEP_FILE"; then
-              sed -i '1i#ifndef nested\n#define nested 0\n#endif\n' "$LOCKDEP_FILE"
-            fi
+            echo "Patching lockdep.c for LOS23 / 4.19 nested param..."
+            sed -i 's/__lock_release(struct lockdep_map \*lock, int nested, unsigned long ip)/__lock_release(struct lockdep_map *lock, unsigned long ip)/' "$LOCKDEP_FILE"
+            sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/g' "$LOCKDEP_FILE"
+            echo "lockdep.c patched successfully."
           fi
 
           QPNP_FILE="drivers/input/misc/qpnp-power-on.c"
