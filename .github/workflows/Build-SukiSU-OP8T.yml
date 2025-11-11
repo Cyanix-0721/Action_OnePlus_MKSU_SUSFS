@@ -1,4 +1,5 @@
 name: Build SukiSU Kernel for OnePlus 8T
+
 on:
   workflow_dispatch:
     inputs:
@@ -47,8 +48,7 @@ jobs:
           sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib liblz4-tool make squashfs-tools dpkg-dev libssl-dev python3 bc libncurses5-dev
 
       - name: Create kernel workspace directory
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+        run: mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
       - name: Cache Clang
         id: cache-clang
@@ -88,58 +88,48 @@ jobs:
           git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} \
             https://github.com/LineageOS/android_kernel_oneplus_sm8250 android-kernel
 
-      - name: Integrate SukiSU with setup.sh + Tracepoint Hook + SUSFS
+      - name: Integrate SukiSU + SUSFS
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           MODE="${{ github.event.inputs.SUSFS_MODE }}"
 
-          # 1. 运行 SukiSU setup.sh (nongki for non-GKI)
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
+          if [[ "$MODE" == "none" ]]; then
+            echo "Integrating SukiSU (non-GKI)..."
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
+          else
+            echo "Integrating SukiSU with SUSFS ($MODE)..."
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-$MODE
+          fi
 
-          # 2. 启用 Tracepoint Hook
+          # 启用 Tracepoint Hook
           echo "CONFIG_KSU_TRACEPOINT_HOOK=y" >> arch/arm64/configs/vendor/kona_defconfig
 
-          # 3. 手动插入 Tracepoint Hook 调用（官方推荐位置）
-          # fs/exec.c
+          # 插入 trace hook 调用
           sed -i '/#include <linux\/binfmts.h>/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/exec.c
           sed -i '/int do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif' fs/exec.c
           sed -i '/static int compat_do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_execveat_sucompat_hook((int *)AT_FDCWD, &filename, NULL, NULL, NULL);\n#endif' fs/exec.c
 
-          # fs/open.c
           sed -i '/#include "internal.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/open.c
           sed -i '/static long do_faccessat(int dfd, const char __user \*filename, int mode,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);\n#endif' fs/open.c
 
-          # fs/read_write.c
           sed -i '/#include <asm\/unistd.h>/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/read_write.c
           sed -i '/SYSCALL_DEFINE3(read, unsigned int, fd, char __user \*, buf, size_t, count)/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_sys_read_hook(fd, &buf, &count);\n#endif' fs/read_write.c
 
-          # fs/stat.c
           sed -i '/#include "mount.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/stat.c
           sed -i '/SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif' fs/stat.c
           sed -i '/SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif' fs/stat.c
 
-          # 安全模式：input hook
           sed -i '/#include "input-compat.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/input/input.c
           sed -i '/void input_event(struct input_dev \*dev,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_input_hook(&type, &code, &value);\n#endif' drivers/input/input.c
 
-          # pm 命令修复
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # 4. 修复 setup.sh 引入的 nested 错误（关键！）
-          sed -i 's/__lock_release(lock, nested, ip)/__lock_release(lock, 0, ip)/g' kernel/locking/lockdep.c || true
-          sed -i 's/__lock_acquire(lock, nested,/__lock_acquire(lock, 0,/g' kernel/locking/lockdep.c || true
+          # 修复 nested 错误
+          # sed -i 's/__lock_release(lock, nested, ip)/__lock_release(lock, 0, ip)/g' kernel/locking/lockdep.c || true
+          # sed -i 's/__lock_acquire(lock, nested,/__lock_acquire(lock, 0,/g' kernel/locking/lockdep.c || true
 
-          # 5. 可选集成 SUSFS（main/test）
-          if [[ "$MODE" != "none" ]]; then
-            echo "Integrating SUSFS ($MODE)..."
-            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-$MODE
-            # 再次修复 nested（SUSFS 也可能引入）
-            sed -i 's/__lock_release(lock, nested, ip)/__lock_release(lock, 0, ip)/g' kernel/locking/lockdep.c || true
-            sed -i 's/__lock_acquire(lock, nested,/__lock_acquire(lock, 0,/g' kernel/locking/lockdep.c || true
-          fi
-
-          # 6. 版本处理
+          # 版本处理
           cd scripts && sed -i 's/ -dirty//g' setlocalversion
           KSU_VERSION=$(cd ../KernelSU && expr $(git rev-list --count HEAD 2>/dev/null || echo 0) + 20000)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
