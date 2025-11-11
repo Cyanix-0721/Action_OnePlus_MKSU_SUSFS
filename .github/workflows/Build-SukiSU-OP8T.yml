@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       KERNEL_BRANCH:
-        description: "选择 LineageOS 内核分支（例如 lineage-23.0 或 lineage-22.1）"
+        description: "选择 LineageOS 内核分支"
         required: true
         default: "lineage-23.0"
       SUSFS_MODE:
@@ -12,17 +12,16 @@ on:
         required: true
         type: choice
         options:
-          - none
           - main
           - dev
-        default: none
+          - none
+        default: main
       KPM:
         description: "启用 KPM 模块"
         type: boolean
         default: false
-
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 3 * * *"  # 每天北京时间 11:00 自动触发
 
 jobs:
   build:
@@ -42,7 +41,7 @@ jobs:
 
           mkdir -p $HOME/toolchains
           cd $HOME/toolchains
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r530567.tar.gz -O clang.tar.gz
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r530567.tar.gz -O clang.tar.gz
           mkdir clang && tar -xf clang.tar.gz -C clang
           echo "export PATH=$HOME/toolchains/clang/bin:\$PATH" >> $GITHUB_ENV
 
@@ -53,11 +52,13 @@ jobs:
             https://github.com/LineageOS/android_kernel_oneplus_sm8250 kernel_workspace
           cd kernel_workspace
           git submodule update --init --recursive
+          echo "✅ 当前分支: $(git rev-parse --abbrev-ref HEAD)"
 
       - name: Integrate SukiSU (手动 Hook 模式)
         run: |
           cd kernel_workspace
           MODE="${{ github.event.inputs.SUSFS_MODE || 'none' }}"
+          ENABLE_KPM="${{ github.event.inputs.KPM }}"
           if [[ "$MODE" == "main" ]]; then
             echo ">>> 集成 SukiSU SUSFS-main 分支 (非 GKI 手动模式)"
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
@@ -68,6 +69,13 @@ jobs:
             echo ">>> 跳过 SUSFS 集成"
           fi
 
+          if [[ "$ENABLE_KPM" == "true" ]]; then
+            echo ">>> 启用 KPM 模块"
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s kpm
+          else
+            echo ">>> 跳过 KPM 集成"
+          fi
+
       - name: Configure Kernel
         run: |
           cd kernel_workspace
@@ -76,7 +84,8 @@ jobs:
           export PATH=$HOME/toolchains/clang/bin:$PATH
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          make O=out vendor/bengal_defconfig
+          make O=out vendor/kona_defconfig
+          echo "✅ 已应用 vendor/kona_defconfig"
 
       - name: Build Kernel
         run: |
@@ -86,7 +95,6 @@ jobs:
           export PATH=$HOME/toolchains/clang/bin:$PATH
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          # 输出详细编译日志
           make O=out -j$(nproc) V=1 2>&1 | tee build.log
         continue-on-error: true
 
@@ -104,18 +112,28 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
           cd AnyKernel3
           rm -rf *.img *.zip
-          cp -f ../kernel_workspace/out/arch/arm64/boot/Image ./Image
+
+          if [ -f ../kernel_workspace/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp -f ../kernel_workspace/out/arch/arm64/boot/Image.gz-dtb ./Image.gz-dtb
+          elif [ -f ../kernel_workspace/out/arch/arm64/boot/Image ]; then
+            cp -f ../kernel_workspace/out/arch/arm64/boot/Image ./Image
+          else
+            echo "❌ 未找到 Image 文件"
+            ls -R ../kernel_workspace/out/arch/arm64/boot
+            exit 1
+          fi
+
           cp -f ../kernel_workspace/out/arch/arm64/boot/dtbo.img ./dtbo.img || true
           cp -f ../kernel_workspace/out/arch/arm64/boot/dtb ./dtb || true
           sed -i 's/is_slot_device=1/is_slot_device=0/g' anykernel.sh
 
-          ZIP_NAME="SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'none' }}.zip"
+          ZIP_NAME="SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'none' }}-$(date +%Y%m%d).zip"
           zip -r9 "$ZIP_NAME" * -x .git README.md .gitignore
           mv "$ZIP_NAME" ../
 
-      - name: Upload Artifact
+      - name: Upload Kernel Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'none' }}"
-          path: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'none' }}.zip"
+          path: "SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH || 'lineage-23.0' }}-${{ github.event.inputs.SUSFS_MODE || 'none' }}-*.zip"
