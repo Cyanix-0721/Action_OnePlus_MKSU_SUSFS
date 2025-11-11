@@ -117,7 +117,168 @@ jobs:
         if: ${{ steps.build_kernel.outputs.build_status == '0' }}
         run: |
           cd $GITHUB_WORKSPACE
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+          git clone --depth=1 https://github.comname: Build SukiSU Kernel for OnePlus 8T
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_BRANCH:
+        description: "选择 LineageOS 内核分支"
+        required: true
+        default: "lineage-23.0"
+      SUSFS_MODE:
+        description: "选择 SUSFS 集成模式"
+        required: true
+        type: choice
+        options:
+          - main
+          - dev
+          - none
+        default: main
+      KPM:
+        description: "启用 KPM 模块"
+        type: boolean
+        default: false
+env:
+  TZ: Asia/Shanghai
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CLANG_VERSION: clang-r530567
+      GCC_TAG: android-12.1.0_r27
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set swap to 10G
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 10
+
+      - name: Setup build kernel environment
+        run: |
+          echo "BUILD_TIME=$(TZ=Asia/Shanghai date "+%y%m%d")" >> $GITHUB_ENV
+          echo "BUILD_TIME_1=$(TZ=Asia/Shanghai date "+%Y-%m-%d")" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib bzip2 libbz2-dev liblz4-tool make squashfs-tools dpkg-dev libssl-dev python3 bc libc6-dev-i386 libncurses5-dev
+          mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+
+      - name: Cache Clang toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/kernel_workspace/clang-aosp
+          key: ${{ env.CLANG_VERSION }}
+
+      - name: Download & extract Clang-aosp
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          mkdir -p clang-aosp
+          wget -O ${CLANG_VERSION}.tar.gz \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${CLANG_VERSION}.tar.gz
+          tar -C clang-aosp -zxvf ${CLANG_VERSION}.tar.gz
+
+      - name: Cache GCC toolchain
+        id: cache-gcc
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/kernel_workspace/gcc-64
+          key: gcc-aarch64-${{ env.GCC_TAG }}
+
+      - name: Download & extract Gcc-aosp
+        if: steps.cache-gcc.outputs.cache-hit != 'true'
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          mkdir -p gcc-64
+          wget -O gcc-aarch64.tar.gz \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/${GCC_TAG}.tar.gz
+          tar -C gcc-64 -zxvf gcc-aarch64.tar.gz
+
+      - name: Clone Kernel Source
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} \
+            https://github.com/LineageOS/android_kernel_oneplus_sm8250 android-kernel --depth=1
+
+      - name: Integrate SukiSU
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+          MODE="${{ github.event.inputs.SUSFS_MODE }}"
+          if [[ "$MODE" == "main" ]]; then
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+          elif [[ "$MODE" == "dev" ]]; then
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-dev
+          else
+            echo "Skip SUSFS integration"
+          fi
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> arch/arm64/configs/vendor/kona_defconfig
+          KSU_VERSION=$(cd KernelSU && expr $(git rev-list --count HEAD) + 20000)
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+          cd scripts
+          sed -i 's/ -dirty//g' setlocalversion
+
+      - name: Build kernel with SukiSU
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin:$PATH
+          export KBUILD_BUILD_HOST=Github-Action
+          export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
+          BA_CMD="CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-"
+          EX_CMD="LD=ld.lld LLVM=1 LLVM_IAS=1"
+          DEFCONFIG="vendor/kona_defconfig"
+          make O=out ARCH=arm64 CC=clang $BA_CMD $EX_CMD $DEFCONFIG
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang $BA_CMD $EX_CMD 2>&1 | tee build.log
+
+      - name: Check kernel output files
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel/out
+          if [ -f arch/arm64/boot/Image ]; then
+            echo "CHECK_IMAGE=true" >> $GITHUB_ENV
+            KERNEL_VERSION=$(cat include/config/kernel.release)
+            echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
+          else
+            echo "Kernel output file is empty"
+            exit 1
+          fi
+
+      - name: Apply KPM if enabled
+        if: github.event.inputs.KPM == 'true' && env.CHECK_IMAGE == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel/out/arch/arm64/boot
+          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/patch_linux" -o patch_linux
+          chmod +x patch_linux
+          ./patch_linux
+          rm -f Image
+          mv oImage Image
+
+      - name: Make AnyKernel3
+        if: env.CHECK_IMAGE == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' AnyKernel3/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=1;/IS_SLOT_DEVICE=auto;/g' AnyKernel3/anykernel.sh
+          cp android-kernel/out/arch/arm64/boot/Image AnyKernel3/
+          cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
+          cp android-kernel/out/arch/arm64/boot/dtb AnyKernel3/ || true
+          rm -rf AnyKernel3/.git* AnyKernel3/README.md
+
+      - name: Upload Image
+        if: env.CHECK_IMAGE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image
+          path: kernel_workspace/android-kernel/out/arch/arm64/boot/Image
+
+      - name: Upload AnyKernel3
+        if: env.CHECK_IMAGE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AK3-SukiSU-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}-${{ env.KSUVER }}-${{ env.BUILD_TIME }}
+          path: kernel_workspace/AnyKernel3/*/osm0sis/AnyKernel3.git
           cd AnyKernel3
           rm -rf *.img *.zip
           KERNEL_OUT="../kernel_workspace/out/arch/arm64/boot"
