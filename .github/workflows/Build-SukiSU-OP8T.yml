@@ -88,17 +88,18 @@ jobs:
           git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} \
             https://github.com/LineageOS/android_kernel_oneplus_sm8250 android-kernel
 
-      - name: Integrate SukiSU with setup.sh + Tracepoint Hook
+      - name: Integrate SukiSU with setup.sh + Tracepoint Hook + SUSFS
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+          MODE="${{ github.event.inputs.SUSFS_MODE }}"
 
           # 1. 运行 SukiSU setup.sh (nongki for non-GKI)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
 
-          # 2. 启用 Tracepoint Hook 配置
+          # 2. 启用 Tracepoint Hook
           echo "CONFIG_KSU_TRACEPOINT_HOOK=y" >> arch/arm64/configs/vendor/kona_defconfig
 
-          # 3. 手动插入 Tracepoint Hook 调用 (基于文档)
+          # 3. 手动插入 Tracepoint Hook 调用（官方推荐位置）
           # fs/exec.c
           sed -i '/#include <linux\/binfmts.h>/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/exec.c
           sed -i '/int do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif' fs/exec.c
@@ -117,31 +118,39 @@ jobs:
           sed -i '/SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif' fs/stat.c
           sed -i '/SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif' fs/stat.c
 
-          # 安全模式（必须）
+          # 安全模式：input hook
           sed -i '/#include "input-compat.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/input/input.c
           sed -i '/void input_event(struct input_dev \*dev,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_input_hook(&type, &code, &value);\n#endif' drivers/input/input.c
 
-          # pm 命令修复（必须）
+          # pm 命令修复
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # 4. 修复 setup.sh 引入的 nested 错误
+          # 4. 修复 setup.sh 引入的 nested 错误（关键！）
           sed -i 's/__lock_release(lock, nested, ip)/__lock_release(lock, 0, ip)/g' kernel/locking/lockdep.c || true
           sed -i 's/__lock_acquire(lock, nested,/__lock_acquire(lock, 0,/g' kernel/locking/lockdep.c || true
 
-          # 5. 可选 SUSFS 集成
+          # 5. 可选集成 SUSFS（main/test）
           if [[ "$MODE" != "none" ]]; then
+            echo "Integrating SUSFS ($MODE)..."
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-$MODE
+            # 再次修复 nested（SUSFS 也可能引入）
+            sed -i 's/__lock_release(lock, nested, ip)/__lock_release(lock, 0, ip)/g' kernel/locking/lockdep.c || true
+            sed -i 's/__lock_acquire(lock, nested,/__lock_acquire(lock, 0,/g' kernel/locking/lockdep.c || true
           fi
 
           # 6. 版本处理
           cd scripts && sed -i 's/ -dirty//g' setlocalversion
-          KSU_VERSION=$(cd ../KernelSU && expr $(git rev-list --count HEAD) + 20000)
+          KSU_VERSION=$(cd ../KernelSU && expr $(git rev-list --count HEAD 2>/dev/null || echo 0) + 20000)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
 
-      - name: Build Kernel
+      - name: Build Kernel (Always Save Full Log)
+        id: build
+        continue-on-error: true
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+          mkdir -p out
+
           export ARCH=arm64
           export SUBARCH=arm64
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin:$PATH
@@ -150,28 +159,39 @@ jobs:
 
           make O=out vendor/kona_defconfig
           make O=out olddefconfig
+
           make O=out -j$(nproc --all) \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             LD=ld.lld \
             LLVM=1 LLVM_IAS=1 \
-            2>&1 | tee build.log
+            2>&1 | tee out/build.log
+
+          echo "build_exit_code=$?" >> $GITHUB_ENV
+
+      - name: Upload Build Log (Always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-full
+          path: kernel_workspace/android-kernel/out/build.log
+          if-no-files-found: error
 
       - name: Check Output
+        if: env.build_exit_code == '0'
         run: |
           IMAGE_PATH="$GITHUB_WORKSPACE/kernel_workspace/android-kernel/out/arch/arm64/boot/Image"
           if [ ! -f "$IMAGE_PATH" ]; then
-            echo "Build failed: Image not generated!"
-            tail -50 build.log
+            echo "Build succeeded but Image not found!"
             exit 1
           fi
           echo "CHECK_IMAGE=true" >> $GITHUB_ENV
-          KERNEL_VERSION=$(cat $GITHUB_WORKSPACE/kernel_workspace/android-kernel/out/include/config/kernel.release)
+          KERNEL_VERSION=$(cat out/include/config/kernel.release)
           echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
 
       - name: Apply KPM Patch (if enabled)
-        if: github.event.inputs.KPM == 'true'
+        if: github.event.inputs.KPM == 'true' && env.CHECK_IMAGE == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel/out/arch/arm64/boot
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/patch_linux" -o patch_linux
@@ -199,12 +219,6 @@ jobs:
 
           cd AnyKernel3
           zip -r9 "../$ZIP_NAME" * -x .git README.md .gitignore
-
-      - name: Upload Build Log
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: kernel_workspace/android-kernel/build.log
 
       - name: Upload Kernel Image
         if: env.CHECK_IMAGE == 'true'
