@@ -22,20 +22,37 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04  # 推荐，稳定兼容
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install minimal dependencies
+      - name: Install Cross Compilers (Fix Conflicts)
         run: |
           sudo apt-get update -y
+          sudo apt-get install -y software-properties-common
+          
+          # 添加 Ubuntu Toolchain PPA（提供 gcc-12 交叉编译器）
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+          sudo apt-get update -y
+
+          # 安装 gcc-12 交叉编译器（避免 gcc-11 与 gcc-multilib 冲突）
+          sudo apt-get install -y \
+            gcc-12-aarch64-linux-gnu \
+            gcc-12-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi
+
+          # 安装其他依赖（不安装 gcc-multilib，避免冲突）
           sudo apt-get install -y \
             git python3 unzip curl wget bc \
-            clang lld make gcc gcc-multilib g++-multilib \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            clang lld make gcc g++ \
             zip cpio flex bison libssl-dev libelf-dev \
             libncurses5-dev libncursesw5-dev libxml2-utils device-tree-compiler
+
+          # 设置环境变量
+          echo "CROSS_COMPILE_AARCH64=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM=arm-linux-gnueabi-" >> $GITHUB_ENV
 
       - name: Download Proton Clang
         run: |
@@ -69,9 +86,10 @@ jobs:
           export SUBARCH=arm64
           make O=out ARCH=arm64 \
             CC=clang \
+            HOSTCC=gcc-12 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE_AARCH64 }} \
+            LD=ld.ldd AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             vendor/kona_defconfig
 
@@ -84,8 +102,9 @@ jobs:
           echo "=== Start Kernel Build ==="
           make O=out ARCH=arm64 \
             CC=clang \
+            HOSTCC=gcc-12 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE_AARCH64 }} \
             LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             -j$(nproc) V=1 2>&1 | tee build.log
@@ -93,6 +112,7 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/artifacts
           cp build.log $GITHUB_WORKSPACE/artifacts/build.log || true
 
+      # 布尔转字符串（终极防错）
       - name: Set KPM as string env
         run: |
           echo "KPM_ENABLED=$(echo '${{ toJSON(github.event.inputs.KPM) }}' | tr -d '"')" >> $GITHUB_ENV
