@@ -125,23 +125,21 @@ jobs:
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # 修复 nested 错误
-          if [ -f kernel/locking/lockdep.c ]; then
-            if ! grep -q "#ifndef nested" kernel/locking/lockdep.c; then
-              # 在文件第一行之前插入（确保宏在任何使用之前）
-              sed -i '1i#ifndef nested\n#define nested 0\n#endif\n' kernel/locking/lockdep.c
-              echo "Inserted fallback nested macro into kernel/locking/lockdep.c"
-            else
-              echo "nested macro already present in lockdep.c, skipping insert"
-            fi
-          else
-            echo "lockdep.c not found — skipped nested fallback insert"
+          # 修复 4.19 内核 nested 参数冲突
+          LOCKDEP_FILE="kernel/locking/lockdep.c"
+          if [ -f "$LOCKDEP_FILE" ]; then
+            echo "Patching __lock_release nested param for 4.19 SUSFS compatibility..."
+            # 修改函数定义：删掉 nested 参数
+            sed -i 's/__lock_release(struct lockdep_map \*lock, int nested, unsigned long ip)/__lock_release(struct lockdep_map *lock, unsigned long ip)/' "$LOCKDEP_FILE"
+            # 修改调用：删掉 nested 参数
+            sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/' "$LOCKDEP_FILE"
           fi
 
           # 版本处理
           cd scripts && sed -i 's/ -dirty//g' setlocalversion
           KSU_VERSION=$(cd ../KernelSU && expr $(git rev-list --count HEAD 2>/dev/null || echo 0) + 20000)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+
 
       - name: Build Kernel (Always Save Full Log)
         id: build
