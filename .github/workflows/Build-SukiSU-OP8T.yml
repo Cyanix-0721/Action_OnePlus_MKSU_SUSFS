@@ -126,8 +126,9 @@ jobs:
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
           # 修复 nested 错误
-          # sed -i 's/__lock_release(lock, nested, ip)/__lock_release(lock, 0, ip)/g' kernel/locking/lockdep.c || true
-          # sed -i 's/__lock_acquire(lock, nested,/__lock_acquire(lock, 0,/g' kernel/locking/lockdep.c || true
+          if ! grep -q "define nested" kernel/locking/lockdep.c; then
+            echo -e "\n#ifndef nested\n#define nested 0\n#endif" >> kernel/locking/lockdep.c
+          fi
 
           # 版本处理
           cd scripts && sed -i 's/ -dirty//g' setlocalversion
