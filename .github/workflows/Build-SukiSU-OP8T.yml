@@ -125,35 +125,41 @@ jobs:
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # ---------- 4.19 内核兼容性修复 ----------
+          # ---------- 修复 4.19 内核相关兼容问题 ----------
+          
+          # 修复 nested 参数错误（4.19 系 SUSFS 冲突）
           LOCKDEP_FILE="kernel/locking/lockdep.c"
           if [ -f "$LOCKDEP_FILE" ]; then
-            echo "Patching __lock_release nested param for 4.19 LOS23 compatibility..."
-            
-            # 删除可能存在的 nested 宏定义，避免参数被替换为 0
-            sed -i '/#define nested/d' "$LOCKDEP_FILE"
-          
-            # 修改 __lock_release 函数定义：删除 nested 参数
-            sed -i 's/__lock_release(struct lockdep_map \*lock, int nested, unsigned long ip)/__lock_release(struct lockdep_map *lock, unsigned long ip)/' "$LOCKDEP_FILE"
-          
-            # 修改所有 __lock_release 调用：删除 nested 参数
-            sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/g' "$LOCKDEP_FILE"
+            echo "Patching nested param issue in lockdep.c..."
+            # 检查是否已有 nested 未定义问题
+            if grep -q "nested" "$LOCKDEP_FILE"; then
+              # 如果函数定义中有 nested 参数，则删除它
+              sed -i 's/__lock_release(struct lockdep_map \*lock, int nested, unsigned long ip)/__lock_release(struct lockdep_map *lock, unsigned long ip)/' "$LOCKDEP_FILE"
+              # 删除调用处的 nested 参数引用
+              sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/g' "$LOCKDEP_FILE"
+              # 若文件中引用 nested 变量但未声明，则定义宏
+              if ! grep -q "define nested" "$LOCKDEP_FILE"; then
+                echo -e "\n#ifndef nested\n#define nested 0\n#endif" >> "$LOCKDEP_FILE"
+              fi
+            fi
           fi
           
           # ---------- qpnp-power-on.c 修复 ----------
           QPNP_FILE="drivers/input/misc/qpnp-power-on.c"
           if [ -f "$QPNP_FILE" ]; then
             echo "Patching qpnp-power-on.c..."
-            # 用 0 替换 log_kpd_event 避免编译错误
-            sed -i 's/pon->log_kpd_event/0/g' "$QPNP_FILE"
+            # 只修改条件判断，不影响赋值语句
+            sed -i 's/if (\s*pon->log_kpd_event\s*)/if (0)/g' "$QPNP_FILE"
+            sed -i 's/if (\s*pon->log_kpd_event\s*&&/if (0 \&\&/g' "$QPNP_FILE"
           fi
           
           # ---------- oplus_nwpower.c 修复 ----------
-          OPLUS_FILE="net/oplus_nwpower/oplus_nwpower.c"
-          if [ -f "$OPLUS_FILE" ]; then
+          NWP_FILE="net/oplus_nwpower/oplus_nwpower.c"
+          if [ -f "$NWP_FILE" ]; then
             echo "Patching oplus_nwpower.c..."
-            # 添加 get_cached_platform_id 函数定义，避免隐式声明错误
-            sed -i '1i int get_cached_platform_id(void) { return -1; }' "$OPLUS_FILE"
+            if ! grep -q "get_cached_platform_id" "$NWP_FILE"; then
+              sed -i '1i int get_cached_platform_id(void) { return -1; }' "$NWP_FILE"
+            fi
           fi
 
           # 版本处理
