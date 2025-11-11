@@ -144,38 +144,6 @@ jobs:
           KSU_VERSION=$(cd ../KernelSU && expr $(git rev-list --count HEAD 2>/dev/null || echo 0) + 20000)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
 
-      - name: Fix Compilation Errors
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          
-          # 修复 qpnp-power-on.c - 添加缺失的成员变量
-          if [ -f "drivers/input/misc/qpnp-power-on.c" ]; then
-            echo "Fixing qpnp-power-on.c by adding missing member..."
-            
-            # 在 struct qpnp_pon 中添加 log_kpd_event 成员
-            # 找到 struct qpnp_pon 定义并在合适位置添加
-            if grep -q "struct qpnp_pon {" drivers/input/misc/qpnp-power-on.c; then
-              # 在 kpdpwr_dbc_enable 后添加 log_kpd_event
-              sed -i '/bool kpdpwr_dbc_enable;/a\    bool log_kpd_event;' drivers/input/misc/qpnp-power-on.c
-              echo "Fixed: Added log_kpd_event member to struct qpnp_pon"
-            else
-              # 备用方法：直接添加到结构体开始处
-              sed -i '/struct qpnp_pon {/a\    bool log_kpd_event;' drivers/input/misc/qpnp-power-on.c
-              echo "Fixed: Added log_kpd_event member using alternate method"
-            fi
-          fi
-          
-          # 修复 oplus_nwpower 模块 - 移除问题函数调用
-          if [ -f "net/oplus_nwpower/oplus_nwpower.c" ]; then
-            echo "Fixing oplus_nwpower.c..."
-            # 将 get_cached_platform_id() 调用替换为默认值
-            sed -i 's/get_cached_platform_id()/0/g' net/oplus_nwpower/oplus_nwpower.c
-            echo "Fixed: Replaced get_cached_platform_id() with 0"
-          fi
-          
-          # 确保在 defconfig 中禁用问题模块（备用方案）
-          echo "# CONFIG_OPLUS_NWPOWER is not set" >> arch/arm64/configs/vendor/kona_defconfig
-
       - name: Build Kernel (Always Save Full Log)
         id: build
         continue-on-error: true
