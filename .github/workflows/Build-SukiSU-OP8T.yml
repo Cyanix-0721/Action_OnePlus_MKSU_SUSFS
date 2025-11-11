@@ -46,7 +46,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib liblz4-tool make squashfs-tools dpkg-dev libssl-dev python3 bc libncurses5-dev
 
-      # === 关键修复：必须先创建 kernel_workspace 目录 ===
       - name: Create kernel workspace directory
         run: |
           mkdir -p $GITHUB_WORKSPACE/kernel_workspace
@@ -89,22 +88,24 @@ jobs:
           git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} \
             https://github.com/LineageOS/android_kernel_oneplus_sm8250 android-kernel
 
-      - name: Integrate SukiSU with Tracepoint Hook (No Manual Patch Needed)
+      - name: Integrate SukiSU with Tracepoint Hook
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
 
           MODE="${{ github.event.inputs.SUSFS_MODE }}"
           if [[ "$MODE" != "none" ]]; then
-            # 1. 复制 KernelSU 核心代码
-            git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU_temp
-            cp -r KernelSU_temp/KernelSU/* .
-            rm -rf KernelSU_temp
+            # 1. 克隆 SukiSU-Ultra 并复制正确路径（kernel/ 目录）
+            git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra SukiSU_temp
+            mkdir -p drivers/kernelsu
+            cp -r SukiSU_temp/kernel/* drivers/kernelsu/ 2>/dev/null || true  # 复制 kernel/ 内容
+            cp SukiSU_temp/*.h drivers/kernelsu/ 2>/dev/null || true  # 复制根目录头文件
+            rm -rf SukiSU_temp
 
             # 2. 启用 Tracepoint Hook + 安全模式
             echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/kona_defconfig
             echo "CONFIG_KSU_TRACEPOINT_HOOK=y" >> arch/arm64/configs/vendor/kona_defconfig
 
-            # 3. 插入 tracepoint 调用（干净、无副作用）
+            # 3. 插入 tracepoint 调用（基于 guide/tracepoint-hook.md）
             # fs/exec.c
             sed -i '/#include <linux\/binfmts.h>/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <ksu_trace.h>\n#endif' fs/exec.c
             sed -i '/int do_execve(struct filename \*filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif' fs/exec.c
@@ -123,11 +124,11 @@ jobs:
             sed -i '/SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif' fs/stat.c
             sed -i '/SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user \*, filename,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif' fs/stat.c
 
-            # 安全模式（必须启用）
+            # 安全模式（input hook，必须）
             sed -i '/#include "input-compat.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/input/input.c
             sed -i '/void input_event(struct input_dev \*dev,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_input_hook(&type, &code, &value);\n#endif' drivers/input/input.c
 
-            # pm 命令修复
+            # pm 命令修复（必须）
             sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
             sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
@@ -209,13 +210,4 @@ jobs:
       - name: Upload Kernel Image
         if: env.CHECK_IMAGE == 'true'
         uses: actions/upload-artifact@v4
-        with:
-          name: Image
-          path: kernel_workspace/android-kernel/out/arch/arm64/boot/Image
-
-      - name: Upload AnyKernel3 ZIP
-        if: env.CHECK_IMAGE == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: SukiSU-OP8T-${{ github.event.inputs.KERNEL_BRANCH }}-${{ github.event.inputs.SUSFS_MODE }}${{ github.event.inputs.KPM == 'true' && '-KPM' || '' }}-${{ env.BUILD_TIME }}
-          path: kernel_workspace/*.zip
+        with
