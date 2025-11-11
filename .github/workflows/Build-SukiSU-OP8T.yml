@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       KERNEL_BRANCH:
-        description: "选择 LineageOS 内核分支"
+        description: "选择内核分支（A14 内核推荐使用 oneplus/sm8250_u_14.0.0_op8t）"
         required: true
-        default: "lineage-23.0"
+        default: "oneplus/sm8250_u_14.0.0_op8t"
       SUSFS_MODE:
         description: "选择 SUSFS 集成模式"
         required: true
@@ -86,7 +86,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} \
-            https://github.com/LineageOS/android_kernel_oneplus_sm8250 android-kernel
+            https://github.com/OnePlusOSS/android_kernel_oneplus_sm8250 android-kernel
 
       - name: Integrate SukiSU + SUSFS
         run: |
@@ -125,21 +125,18 @@ jobs:
           sed -i '/#include "tty.h"/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../../drivers/kernelsu/ksu_trace.h>\n#endif' drivers/tty/pty.c
           sed -i '/static struct tty_struct \*pts_unix98_lookup(struct tty_driver \*driver,/a #if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\ntrace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);\n#endif' drivers/tty/pty.c
 
-          # 修复 4.19 内核 nested 参数冲突
-          LOCKDEP_FILE="kernel/locking/lockdep.c"
-          if [ -f "$LOCKDEP_FILE" ]; then
-            echo "Patching __lock_release nested param for 4.19 SUSFS compatibility..."
-            # 修改函数定义：删掉 nested 参数
-            sed -i 's/__lock_release(struct lockdep_map \*lock, int nested, unsigned long ip)/__lock_release(struct lockdep_map *lock, unsigned long ip)/' "$LOCKDEP_FILE"
-            # 修改调用：删掉 nested 参数
-            sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/' "$LOCKDEP_FILE"
-          fi
+          # 修复 4.19 内核 nested 参数冲突（A14 内核无需处理）
+          # LOCKDEP_FILE="kernel/locking/lockdep.c"
+          # if [ -f "$LOCKDEP_FILE" ]; then
+          #   echo "Patching __lock_release nested param for 4.19 SUSFS compatibility..."
+          #   sed -i 's/__lock_release(struct lockdep_map \*lock, int nested, unsigned long ip)/__lock_release(struct lockdep_map *lock, unsigned long ip)/' "$LOCKDEP_FILE"
+          #   sed -i 's/__lock_release(\([^,]*\), *nested, *\([^)]*\))/__lock_release(\1, \2)/' "$LOCKDEP_FILE"
+          # fi
 
           # 版本处理
           cd scripts && sed -i 's/ -dirty//g' setlocalversion
           KSU_VERSION=$(cd ../KernelSU && expr $(git rev-list --count HEAD 2>/dev/null || echo 0) + 20000)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-
 
       - name: Build Kernel (Always Save Full Log)
         id: build
